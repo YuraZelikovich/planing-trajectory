@@ -1,148 +1,334 @@
-<mujoco model="drone_labyrinth">
+<mujoco model="quadrotor">
 
-    <option gravity="0 0 -9.81"
-            timestep="0.002"/>
+    <compiler angle="radian" autolimits="true"/>
+
+    <option
+        timestep="0.002"
+        gravity="0 0 -9.81"
+        integrator="implicitfast"
+    />
+
+    <visual>
+        <headlight
+            diffuse="0.8 0.8 0.8"
+            ambient="0.3 0.3 0.3"
+        />
+    </visual>
+
+    <default>
+
+        <geom
+            contype="1"
+            conaffinity="1"
+            friction="0.8 0.3 0.1"
+        />
+
+    </default>
 
     <worldbody>
 
-        <geom name="ground"
-              type="plane"
-              size="20 20 0.1"
-              pos="0 0 0"
-              rgba="0.25 0.25 0.25 1"/>
+        <light
+            pos="0 0 15"
+            dir="0 0 -1"
+        />
 
+        <geom
+            name="ground"
+            type="plane"
+            size="40 40 0.1"
+        />
 
-        <!-- ================================================ -->
-        <!-- СТЕНА 1                                           -->
-        <!-- ================================================ -->
+        <!-- ========================= -->
+        <!-- DRONE -->
+        <!-- ========================= -->
 
-        <geom name="wall_01"
-              type="box"
-              pos="3 7 4"
-              size="0.4 3 4"/>
+        <body
+            name="drone"
+            pos="0 0 2"
+        >
 
-        <geom name="wall_02"
-              type="box"
-              pos="3 -7 4"
-              size="0.4 3 4"/>
+            <freejoint name="drone_free"/>
 
+            <!-- Main body -->
 
-        <!-- ================================================ -->
-        <!-- СТЕНА 2                                           -->
-        <!-- проход сверху                                    -->
-        <!-- ================================================ -->
+            <geom
+                name="drone_body"
+                type="box"
+                size="0.30 0.30 0.10"
+                mass="1.4"
+            />
 
-        <geom name="wall_03"
-              type="box"
-              pos="6 -3.5 4"
-              size="0.4 5.5 4"/>
+            <!-- ========================= -->
+            <!-- MOTOR 1 -->
+            <!-- ========================= -->
 
+            <site
+                name="motor1"
+                pos="0.28 0.28 0"
+                quat="1 0 0 0"
+                size="0.04"
+            />
 
-        <!-- ================================================ -->
-        <!-- СТЕНА 3                                           -->
-        <!-- проход снизу                                    -->
-        <!-- ================================================ -->
+            <!-- ========================= -->
+            <!-- MOTOR 2 -->
+            <!-- ========================= -->
 
-        <geom name="wall_04"
-              type="box"
-              pos="9 3.5 4"
-              size="0.4 5.5 4"/>
+            <site
+                name="motor2"
+                pos="-0.28 0.28 0"
+                quat="1 0 0 0"
+                size="0.04"
+            />
 
+            <!-- ========================= -->
+            <!-- MOTOR 3 -->
+            <!-- ========================= -->
 
-        <!-- ================================================ -->
-        <!-- СТЕНА 4                                           -->
-        <!-- проход сверху                                    -->
-        <!-- ================================================ -->
+            <site
+                name="motor3"
+                pos="-0.28 -0.28 0"
+                quat="1 0 0 0"
+                size="0.04"
+            />
 
-        <geom name="wall_05"
-              type="box"
-              pos="12 -3.5 4"
-              size="0.4 5.5 4"/>
+            <!-- ========================= -->
+            <!-- MOTOR 4 -->
+            <!-- ========================= -->
 
+            <site
+                name="motor4"
+                pos="0.28 -0.28 0"
+                quat="1 0 0 0"
+                size="0.04"
+            />
 
-        <!-- ================================================ -->
-        <!-- СТЕНА 5                                           -->
-        <!-- проход снизу                                    -->
-        <!-- ================================================ -->
+            <!-- ========================= -->
+            <!-- ARMS -->
+            <!-- ========================= -->
 
-        <geom name="wall_06"
-              type="box"
-              pos="15 3.5 4"
-              size="0.4 5.5 4"/>
+            <geom
+                name="arm1"
+                type="capsule"
+                fromto="-0.28 -0.28 0 0.28 0.28 0"
+                size="0.025"
+                mass="0.02"
+            />
 
+            <geom
+                name="arm2"
+                type="capsule"
+                fromto="-0.28 0.28 0 0.28 -0.28 0"
+                size="0.025"
+                mass="0.02"
+            />
 
-        <!-- ================================================ -->
-        <!-- ВНУТРЕННИЕ ПЕРЕГОРОДКИ                           -->
-        <!-- ================================================ -->
+            <!-- ========================= -->
+            <!-- ROTORS -->
+            <!-- ========================= -->
 
-        <geom name="wall_07"
-              type="box"
-              pos="4.5 2.5 4"
-              size="1.0 0.4 4"/>
+            <geom
+                name="rotor1"
+                type="cylinder"
+                pos="0.28 0.28 0.03"
+                size="0.12 0.01"
+                mass="0.01"
+            />
 
-        <geom name="wall_08"
-              type="box"
-              pos="7.5 -2.5 4"
-              size="1.0 0.4 4"/>
+            <geom
+                name="rotor2"
+                type="cylinder"
+                pos="-0.28 0.28 0.03"
+                size="0.12 0.01"
+                mass="0.01"
+            />
 
-        <geom name="wall_09"
-              type="box"
-              pos="10.5 2.5 4"
-              size="1.0 0.4 4"/>
+            <geom
+                name="rotor3"
+                type="cylinder"
+                pos="-0.28 -0.28 0.03"
+                size="0.12 0.01"
+                mass="0.01"
+            />
 
-        <geom name="wall_10"
-              type="box"
-              pos="13.5 -2.5 4"
-              size="1.0 0.4 4"/>
-
-
-        <!-- ================================================ -->
-        <!-- НЕБОЛЬШИЕ БЛОКИ                                  -->
-        <!-- ================================================ -->
-
-        <geom name="block_01"
-              type="box"
-              pos="2 0 1"
-              size="0.7 0.7 1"/>
-
-        <geom name="block_02"
-              type="box"
-              pos="5 5 1"
-              size="0.7 0.7 1"/>
-
-        <geom name="block_03"
-              type="box"
-              pos="8 -5 1"
-              size="0.7 0.7 1"/>
-
-        <geom name="block_04"
-              type="box"
-              pos="11 5 1"
-              size="0.7 0.7 1"/>
-
-        <geom name="block_05"
-              type="box"
-              pos="14 -5 1"
-              size="0.7 0.7 1"/>
-
-
-        <!-- ================================================ -->
-        <!-- ДРОН                                               -->
-        <!-- ================================================ -->
-
-        <body name="drone"
-              pos="0 0 2">
-
-            <freejoint/>
-
-            <geom name="drone_body"
-                  type="box"
-                  size="0.3 0.3 0.1"
-                  mass="1.4"
-                  rgba="0.1 0.4 1.0 1"/>
+            <geom
+                name="rotor4"
+                type="cylinder"
+                pos="0.28 -0.28 0.03"
+                size="0.12 0.01"
+                mass="0.01"
+            />
 
         </body>
 
+
+        <!-- ========================================================= -->
+      <!-- LARGE 3D LABYRINTH                                       -->
+      <!-- ========================================================= -->
+
+      <!-- SECTION 1 -->
+
+      <geom
+      name="wall1"
+      type="box"
+      pos="4 0 1.5"
+      size="0.5 7 2"
+      />
+
+      <geom
+      name="wall2"
+      type="box"
+      pos="8 5 2.0"
+      size="4 0.5 2.0"
+      />
+
+      <geom
+      name="wall3"
+      type="box"
+      pos="8 -5 1.0"
+      size="4 0.5 1.0"
+      />
+
+
+      <!-- SECTION 2 -->
+
+      <geom
+      name="wall4"
+      type="box"
+      pos="12 0 2.5"
+      size="0.5 8 2.5"
+      />
+
+      <geom
+      name="wall5"
+      type="box"
+      pos="16 6 1.5"
+      size="4 0.5 1.5"
+      />
+
+      <geom
+      name="wall6"
+      type="box"
+      pos="16 -6 3.0"
+      size="4 0.5 3.0"
+      />
+
+
+      <!-- SECTION 3 -->
+
+      <geom
+      name="wall7"
+      type="box"
+      pos="20 0 1.5"
+      size="0.5 8 1.5"
+      />
+
+      <geom
+      name="wall8"
+      type="box"
+      pos="24 5 3.0"
+      size="4 0.5 3.0"
+      />
+
+      <geom
+      name="wall9"
+      type="box"
+      pos="24 -5 1.0"
+      size="4 0.5 1.0"
+      />
+
+
+      <!-- SECTION 4 -->
+
+      <geom
+      name="wall10"
+      type="box"
+      pos="28 0 2.5"
+      size="0.5 8 2.5"
+      />
+
+      <geom
+      name="wall11"
+      type="box"
+      pos="32 6 1.5"
+      size="4 0.5 1.5"
+      />
+
+      <geom
+      name="wall12"
+      type="box"
+      pos="32 -6 3.0"
+      size="4 0.5 3.0"
+      />
+
+
+      <!-- FINAL SECTION -->
+
+      <geom
+      name="wall13"
+      type="box"
+      pos="36 0 2.0"
+      size="0.5 8 2.0"
+      />
+
+      <geom
+      name="wall14"
+      type="box"
+      pos="30 10 2.0"
+      size="8 0.5 2.0"
+      />
+
+      <geom
+      name="wall15"
+      type="box"
+      pos="30 -10 2.0"
+      size="8 0.5 2.0"
+      />
+
     </worldbody>
+
+
+    <!-- ========================= -->
+    <!-- ACTUATORS -->
+    <!-- ========================= -->
+
+    <actuator>
+
+    <!-- MOTOR 1: +X +Y -->
+    <motor
+        name="motor1_actuator"
+        site="motor1"
+        gear="0 0 1 0 0 0.035"
+        ctrlrange="0 10"
+        ctrllimited="true"
+    />
+
+    <!-- MOTOR 2: -X +Y -->
+    <motor
+        name="motor2_actuator"
+        site="motor2"
+        gear="0 0 1 0 0 -0.035"
+        ctrlrange="0 10"
+        ctrllimited="true"
+    />
+
+    <!-- MOTOR 3: -X -Y -->
+    <motor
+        name="motor3_actuator"
+        site="motor3"
+        gear="0 0 1 0 0 0.035"
+        ctrlrange="0 10"
+        ctrllimited="true"
+    />
+
+    <!-- MOTOR 4: +X -Y -->
+    <motor
+        name="motor4_actuator"
+        site="motor4"
+        gear="0 0 1 0 0 -0.035"
+        ctrlrange="0 10"
+        ctrllimited="true"
+    />
+
+</actuator>
 
 </mujoco>
