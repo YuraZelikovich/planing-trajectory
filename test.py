@@ -1,376 +1,140 @@
 import mujoco
 import mujoco.viewer
+
 import numpy as np
 import heapq
 import time
 
-model = mujoco.MjModel.from_xml_path("model.xml")
+
+# ============================================================
+# MODEL
+# ============================================================
+
+MODEL_FILE = "model.xml"
+
+model = mujoco.MjModel.from_xml_path(MODEL_FILE)
 data = mujoco.MjData(model)
 
 drone_id = model.body("drone").id
+
 mass = model.body_mass[drone_id]
 
-START_POSITION = np.array([0.0, 0.0, 2.0])
+
+# ============================================================
+# START
+# ============================================================
+
+START_POSITION = np.array([
+    0.0,
+    0.0,
+    2.0
+], dtype=float)
 
 START_ROLL = 0.0
-START_PITCH = np.deg2rad(0.0)
+START_PITCH = 0.0
 START_YAW = 0.0
 
-GOAL_POSITION = np.array([18.0, 6.0, 2.0])
+
+# ============================================================
+# GOAL
+# ============================================================
+
+GOAL_POSITION = np.array([
+    0.0,
+    0.0,
+    2.0
+])
 
 GOAL_ROLL = 0.0
-GOAL_PITCH = np.deg2rad(0.0)
+GOAL_PITCH = 180.0
 GOAL_YAW = 0.0
+
+
+# ============================================================
+# WORKING AREA
+# ============================================================
 
 GRID_SIZE = 0.5
 
-X_MIN = -1.0
-X_MAX = 20.0
+X_MIN = -2.0
+X_MAX = 40.0
 
-Y_MIN = -10.0
-Y_MAX = 10.0
+Y_MIN = -12.0
+Y_MAX = 12.0
 
-DRONE_RADIUS = 0.5
+Z_MIN = 0.5
+Z_MAX = 3
 
-Kp_position = 8.0
-Kd_position = 5.0
+# ============================================================
+# DRONE SIZE
+# ============================================================
 
-MAX_FORCE = 100.0
+# Радиус горизонтальной проекции дрона.
+DRONE_RADIUS = 0.45
 
-Kp_rotation = 8.0
-Kd_rotation = 4.0
+# Запас сверху/снизу.
+DRONE_HEIGHT = 0.20
 
-MAX_TORQUE = 3.0
+# Дополнительный запас безопасности.
+SAFETY_MARGIN = 0.15
 
-PATH_SPEED = 1.0
-ROTATION_TIME = 5.0
 
-POSITION_TOLERANCE = 0.05
-ORIENTATION_TOLERANCE = np.deg2rad(1.0)
+# ============================================================
+# CONTROLLER
+# ============================================================
 
+Kp_position = 2.0
+Kd_position = 2.5
 
-def get_obstacles():
-    obstacles = []
 
-    for geom_id in range(model.ngeom):
-        geom_type = model.geom_type[geom_id]
+Kp_attitude = 8.0
+Kd_attitude = 2.0
 
-        if geom_type != mujoco.mjtGeom.mjGEOM_BOX:
-            continue
 
-        name = mujoco.mj_id2name(
-            model,
-            mujoco.mjtObj.mjOBJ_GEOM,
-            geom_id
-        )
+# ============================================================
+# LIMITS
+# ============================================================
 
-        if name == "ground":
-            continue
+MAX_TILT = np.radians(15.0)
 
-        body_id = model.geom_bodyid[geom_id]
+MAX_HORIZONTAL_ACCEL = 2.5
 
-        if body_id == drone_id:
-            continue
+MAX_VERTICAL_ACCEL = 3.0
 
-        pos = model.geom_pos[geom_id].copy()
-        size = model.geom_size[geom_id].copy()
+MAX_TOTAL_THRUST = 35.0
 
-        obstacles.append({
-            "name": name,
-            "center": pos,
-            "half_size": size
-        })
+MAX_TORQUE = 0.8
 
-    return obstacles
 
+# ============================================================
+# MOTORS
+# ============================================================
 
-OBSTACLES = get_obstacles()
+ARM = 0.28
 
+MIN_THRUST_PER_MOTOR = 0.0
 
-print()
-print("OBSTACLES FROM MUJOCO")
-print("Количество препятствий:", len(OBSTACLES))
+MAX_THRUST_PER_MOTOR = 10.0
 
-for obstacle in OBSTACLES:
-    print(
-        obstacle["name"],
-        "center =",
-        np.round(obstacle["center"], 2),
-        "half_size =",
-        np.round(obstacle["half_size"], 2)
-    )
 
-print()
-
-
-def collision_xy(x, y):
-    for obstacle in OBSTACLES:
-        center = obstacle["center"]
-        half_size = obstacle["half_size"]
-
-        min_x = center[0] - half_size[0] - DRONE_RADIUS
-        max_x = center[0] + half_size[0] + DRONE_RADIUS
-
-        min_y = center[1] - half_size[1] - DRONE_RADIUS
-        max_y = center[1] + half_size[1] + DRONE_RADIUS
-
-        if (
-            min_x <= x <= max_x
-            and
-            min_y <= y <= max_y
-        ):
-            return True
-
-    return False
-
-
-def world_to_grid(position):
-    gx = int(round((position[0] - X_MIN) / GRID_SIZE))
-    gy = int(round((position[1] - Y_MIN) / GRID_SIZE))
-
-    return gx, gy
-
-
-def grid_to_world(node):
-    x = X_MIN + node[0] * GRID_SIZE
-    y = Y_MIN + node[1] * GRID_SIZE
-
-    return np.array([x, y])
-
-
-def heuristic(a, b):
-    dx = a[0] - b[0]
-    dy = a[1] - b[1]
-
-    return np.sqrt(dx * dx + dy * dy)
-
-
-
-def astar(start, goal):
-    start_node = world_to_grid(start)
-    goal_node = world_to_grid(goal)
-
-    print("START GRID:", start_node)
-    print("GOAL GRID:", goal_node)
-
-    if collision_xy(start[0], start[1]):
-        raise RuntimeError(
-            "Старт находится внутри препятствия."
-        )
-
-    if collision_xy(goal[0], goal[1]):
-        raise RuntimeError(
-            "Цель находится внутри препятствия."
-        )
-
-    open_set = []
-
-    heapq.heappush(
-        open_set,
-        (0.0, start_node)
-    )
-
-    came_from = {}
-
-    g_score = {
-        start_node: 0.0
-    }
-
-    closed = set()
-
-    directions = [
-        (1, 0),
-        (-1, 0),
-        (0, 1),
-        (0, -1),
-        (1, 1),
-        (1, -1),
-        (-1, 1),
-        (-1, -1)
-    ]
-
-    max_x = int(
-        (X_MAX - X_MIN) / GRID_SIZE
-    )
-
-    max_y = int(
-        (Y_MAX - Y_MIN) / GRID_SIZE
-    )
-
-    while open_set:
-        _, current = heapq.heappop(open_set)
-
-        if current in closed:
-            continue
-
-        closed.add(current)
-
-        if current == goal_node:
-            path = []
-            node = current
-
-            while node in came_from:
-                path.append(
-                    grid_to_world(node)
-                )
-
-                node = came_from[node]
-
-            path.append(
-                grid_to_world(start_node)
-            )
-
-            path.reverse()
-
-            return path
-
-        for dx, dy in directions:
-            neighbor = (
-                current[0] + dx,
-                current[1] + dy
-            )
-
-            if (
-                neighbor[0] < 0
-                or
-                neighbor[0] > max_x
-            ):
-                continue
-
-            if (
-                neighbor[1] < 0
-                or
-                neighbor[1] > max_y
-            ):
-                continue
-
-            position = grid_to_world(neighbor)
-
-            if collision_xy(
-                position[0],
-                position[1]
-            ):
-                continue
-
-            if dx != 0 and dy != 0:
-                side_1 = grid_to_world(
-                    (
-                        current[0] + dx,
-                        current[1]
-                    )
-                )
-
-                side_2 = grid_to_world(
-                    (
-                        current[0],
-                        current[1] + dy
-                    )
-                )
-
-                if collision_xy(
-                    side_1[0],
-                    side_1[1]
-                ):
-                    continue
-
-                if collision_xy(
-                    side_2[0],
-                    side_2[1]
-                ):
-                    continue
-
-            if dx != 0 and dy != 0:
-                movement_cost = np.sqrt(2.0)
-            else:
-                movement_cost = 1.0
-
-            tentative_g = (
-                g_score[current]
-                +
-                movement_cost
-            )
-
-            if (
-                neighbor not in g_score
-                or
-                tentative_g < g_score[neighbor]
-            ):
-                came_from[neighbor] = current
-                g_score[neighbor] = tentative_g
-
-                f_score = (
-                    tentative_g
-                    +
-                    heuristic(
-                        neighbor,
-                        goal_node
-                    )
-                )
-
-                heapq.heappush(
-                    open_set,
-                    (f_score, neighbor)
-                )
-
-    return None
-
-
-# ==================== SIMPLIFY PATH ====================
-
-def simplify_path(path):
-    if len(path) <= 2:
-        return path
-
-    result = [path[0]]
-    previous_direction = None
-
-    for i in range(1, len(path) - 1):
-        direction = (
-            path[i + 1]
-            -
-            path[i]
-        )
-
-        direction_norm = np.linalg.norm(direction)
-
-        if direction_norm < 1e-9:
-            continue
-
-        direction /= direction_norm
-
-        if previous_direction is None:
-            previous_direction = direction
-            continue
-
-        change = np.linalg.norm(
-            direction - previous_direction
-        )
-
-        if change > 0.01:
-            result.append(path[i])
-
-        previous_direction = direction
-
-    result.append(path[-1])
-
-    return result
-
-
-# ==================== QUATERNION ====================
+# ============================================================
+# QUATERNION
+# ============================================================
 
 def quaternion_from_euler(
     roll,
     pitch,
     yaw
 ):
-    cr = np.cos(roll / 2.0)
-    sr = np.sin(roll / 2.0)
 
-    cp = np.cos(pitch / 2.0)
-    sp = np.sin(pitch / 2.0)
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
 
-    cy = np.cos(yaw / 2.0)
-    sy = np.sin(yaw / 2.0)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
 
     return np.array([
         cr * cp * cy + sr * sp * sy,
@@ -379,207 +143,6 @@ def quaternion_from_euler(
         cr * cp * sy - sr * sp * cy
     ])
 
-
-# ==================== SLERP ====================
-
-def slerp(q1, q2, t):
-    q1 = q1 / np.linalg.norm(q1)
-    q2 = q2 / np.linalg.norm(q2)
-
-    dot = np.dot(q1, q2)
-
-    if dot < 0.0:
-        q2 = -q2
-        dot = -dot
-
-    dot = np.clip(
-        dot,
-        -1.0,
-        1.0
-    )
-
-    if dot > 0.9995:
-        result = (
-            q1
-            +
-            t * (q2 - q1)
-        )
-
-        return result / np.linalg.norm(result)
-
-    theta = np.arccos(dot)
-    sin_theta = np.sin(theta)
-
-    a = (
-        np.sin((1.0 - t) * theta)
-        /
-        sin_theta
-    )
-
-    b = (
-        np.sin(t * theta)
-        /
-        sin_theta
-    )
-
-    return a * q1 + b * q2
-
-
-# ==================== QUATERNION ERROR ====================
-
-def quaternion_error(
-    current,
-    target
-):
-    current = (
-        current
-        /
-        np.linalg.norm(current)
-    )
-
-    target = (
-        target
-        /
-        np.linalg.norm(target)
-    )
-
-    current_inverse = np.array([
-        current[0],
-        -current[1],
-        -current[2],
-        -current[3]
-    ])
-
-    error = np.zeros(4)
-
-    mujoco.mju_mulQuat(
-        error,
-        target,
-        current_inverse
-    )
-
-    error /= np.linalg.norm(error)
-
-    if error[0] < 0.0:
-        error = -error
-
-    w = np.clip(
-        error[0],
-        -1.0,
-        1.0
-    )
-
-    vector = error[1:]
-    vector_norm = np.linalg.norm(vector)
-
-    if vector_norm < 1e-8:
-        return np.zeros(3)
-
-    angle = (
-        2.0
-        *
-        np.arctan2(
-            vector_norm,
-            w
-        )
-    )
-
-    axis = vector / vector_norm
-
-    return axis * angle
-
-
-# ==================== POSITION TRAJECTORY ====================
-
-def make_position_trajectory():
-    position_difference = (
-        GOAL_POSITION
-        -
-        START_POSITION
-    )
-
-    distance = np.linalg.norm(
-        position_difference
-    )
-
-    if distance < POSITION_TOLERANCE:
-        return [START_POSITION.copy()], 0.0
-
-    path = astar(
-        START_POSITION,
-        GOAL_POSITION
-    )
-
-    if path is None:
-        raise RuntimeError(
-            "A* не смог найти путь."
-        )
-
-    path = simplify_path(path)
-
-    length = 0.0
-
-    for i in range(len(path) - 1):
-        length += np.linalg.norm(
-            path[i + 1]
-            -
-            path[i]
-        )
-
-    flight_time = length / PATH_SPEED
-
-    return path, flight_time
-
-
-PATH, FLIGHT_TIME = make_position_trajectory()
-
-
-# ==================== POSITION AT TIME ====================
-
-def position_at_time(t):
-    if FLIGHT_TIME <= 0.0:
-        return GOAL_POSITION.copy()
-
-    if t >= FLIGHT_TIME:
-        return GOAL_POSITION.copy()
-
-    distance = PATH_SPEED * t
-    accumulated = 0.0
-
-    for i in range(len(PATH) - 1):
-        segment_vector = (
-            PATH[i + 1]
-            -
-            PATH[i]
-        )
-
-        segment = np.linalg.norm(
-            segment_vector
-        )
-
-        if accumulated + segment >= distance:
-            local = (
-                distance - accumulated
-            ) / segment
-
-            xy = (
-                PATH[i]
-                +
-                local * segment_vector
-            )
-
-            return np.array([
-                xy[0],
-                xy[1],
-                START_POSITION[2]
-            ])
-
-        accumulated += segment
-
-    return GOAL_POSITION.copy()
-
-
-# ==================== ORIENTATION ====================
 
 q_start = quaternion_from_euler(
     START_ROLL,
@@ -594,48 +157,668 @@ q_goal = quaternion_from_euler(
 )
 
 
-def orientation_at_time(t):
-    if t <= FLIGHT_TIME:
-        return q_start.copy()
+# ============================================================
+# OBSTACLES
+# ============================================================
 
-    rotation_t = t - FLIGHT_TIME
+def get_obstacles():
 
-    if rotation_t >= ROTATION_TIME:
-        return q_goal.copy()
+    obstacles = []
 
-    s = rotation_t / ROTATION_TIME
+    # Обновляем состояние MuJoCo,
+    # чтобы geom_xpos и geom_xmat содержали
+    # актуальные мировые координаты.
+    mujoco.mj_forward(model, data)
 
-    s = np.clip(
-        s,
-        0.0,
+    for geom_id in range(model.ngeom):
+
+        # Нас интересуют только BOX.
+        if model.geom_type[geom_id] != mujoco.mjtGeom.mjGEOM_BOX:
+            continue
+
+        name = mujoco.mj_id2name(
+            model,
+            mujoco.mjtObj.mjOBJ_GEOM,
+            geom_id
+        )
+
+        # Пол не является препятствием.
+        if name == "ground":
+            continue
+
+        body_id = model.geom_bodyid[geom_id]
+
+        # Геометрия самого дрона не является препятствием.
+        if body_id == drone_id:
+            continue
+
+        # МИРОВАЯ координата центра.
+        center = data.geom_xpos[geom_id].copy()
+
+        # Размер BOX в локальной системе координат.
+        half_local = model.geom_size[geom_id].copy()
+
+        # Мировая ориентация BOX.
+        rotation = data.geom_xmat[geom_id].reshape(3, 3)
+
+        # Получаем консервативный AABB.
+        half_world = np.abs(rotation) @ half_local
+
+        obstacles.append(
+            (
+                center,
+                half_world
+            )
+        )
+
+    return obstacles
+
+
+OBSTACLES = get_obstacles()
+
+
+# ============================================================
+# COLLISION
+# ============================================================
+
+def collision(position):
+
+    x, y, z = position
+
+    # --------------------------------------------
+    # WORKING AREA
+    # --------------------------------------------
+
+    if x < X_MIN or x > X_MAX:
+        return True
+
+    if y < Y_MIN or y > Y_MAX:
+        return True
+
+    if z < Z_MIN or z > Z_MAX:
+        return True
+
+    # --------------------------------------------
+    # OBSTACLES
+    # --------------------------------------------
+
+    total_horizontal_margin = (
+        DRONE_RADIUS
+        +
+        SAFETY_MARGIN
+    )
+
+    total_vertical_margin = (
+        DRONE_HEIGHT
+        +
+        SAFETY_MARGIN
+    )
+
+    for center, half in OBSTACLES:
+
+        min_x = (
+            center[0]
+            -
+            half[0]
+            -
+            total_horizontal_margin
+        )
+
+        max_x = (
+            center[0]
+            +
+            half[0]
+            +
+            total_horizontal_margin
+        )
+
+        min_y = (
+            center[1]
+            -
+            half[1]
+            -
+            total_horizontal_margin
+        )
+
+        max_y = (
+            center[1]
+            +
+            half[1]
+            +
+            total_horizontal_margin
+        )
+
+        min_z = (
+            center[2]
+            -
+            half[2]
+            -
+            total_vertical_margin
+        )
+
+        max_z = (
+            center[2]
+            +
+            half[2]
+            +
+            total_vertical_margin
+        )
+
+        if (
+            min_x <= x <= max_x
+            and
+            min_y <= y <= max_y
+            and
+            min_z <= z <= max_z
+        ):
+            return True
+
+    return False
+
+
+# ============================================================
+# SEGMENT COLLISION
+# ============================================================
+
+def segment_collision(
+    start,
+    end
+):
+
+    start = np.asarray(
+        start,
+        dtype=float
+    )
+
+    end = np.asarray(
+        end,
+        dtype=float
+    )
+
+    distance = np.linalg.norm(
+        end - start
+    )
+
+    if distance < 1e-9:
+
+        return collision(start)
+
+    # Проверяем отрезок с достаточно маленьким шагом.
+    step = GRID_SIZE * 0.25
+
+    number_of_checks = max(
+        2,
+        int(
+            np.ceil(
+                distance / step
+            )
+        )
+    )
+
+    for i in range(
+        number_of_checks + 1
+    ):
+
+        alpha = (
+            i
+            /
+            number_of_checks
+        )
+
+        point = (
+            start
+            +
+            alpha
+            *
+            (end - start)
+        )
+
+        if collision(point):
+            return True
+
+    return False
+
+
+# ============================================================
+# WORLD -> GRID
+# ============================================================
+
+def world_to_grid(position):
+
+    return (
+        int(round(
+            (position[0] - X_MIN)
+            /
+            GRID_SIZE
+        )),
+
+        int(round(
+            (position[1] - Y_MIN)
+            /
+            GRID_SIZE
+        )),
+
+        int(round(
+            (position[2] - Z_MIN)
+            /
+            GRID_SIZE
+        ))
+    )
+
+
+# ============================================================
+# GRID -> WORLD
+# ============================================================
+
+def grid_to_world(node):
+
+    return np.array([
+        X_MIN + node[0] * GRID_SIZE,
+        Y_MIN + node[1] * GRID_SIZE,
+        Z_MIN + node[2] * GRID_SIZE
+    ])
+
+
+# ============================================================
+# HEURISTIC
+# ============================================================
+
+def heuristic(a, b):
+
+    return np.linalg.norm(
+        np.array(a, dtype=float)
+        -
+        np.array(b, dtype=float)
+    )
+
+
+# ============================================================
+# A*
+# ============================================================
+
+def astar(
+    start,
+    goal
+):
+
+    # --------------------------------------------
+    # CHECK START / GOAL
+    # --------------------------------------------
+
+    if collision(start):
+
+        raise RuntimeError(
+            "Старт находится внутри препятствия "
+            "или вне рабочей зоны."
+        )
+
+    if collision(goal):
+
+        raise RuntimeError(
+            "Цель находится внутри препятствия "
+            "или вне рабочей зоны."
+        )
+
+    start_node = world_to_grid(start)
+
+    goal_node = world_to_grid(goal)
+
+    # --------------------------------------------
+    # GRID LIMITS
+    # --------------------------------------------
+
+    max_x = int(
+        round(
+            (X_MAX - X_MIN)
+            /
+            GRID_SIZE
+        )
+    )
+
+    max_y = int(
+        round(
+            (Y_MAX - Y_MIN)
+            /
+            GRID_SIZE
+        )
+    )
+
+    max_z = int(
+        round(
+            (Z_MAX - Z_MIN)
+            /
+            GRID_SIZE
+        )
+    )
+
+    # --------------------------------------------
+    # 26 NEIGHBOURS
+    # --------------------------------------------
+
+    directions = []
+
+    for dx in [-1, 0, 1]:
+
+        for dy in [-1, 0, 1]:
+
+            for dz in [-1, 0, 1]:
+
+                if (
+                    dx == 0
+                    and
+                    dy == 0
+                    and
+                    dz == 0
+                ):
+                    continue
+
+                directions.append(
+                    (
+                        dx,
+                        dy,
+                        dz
+                    )
+                )
+
+    # --------------------------------------------
+    # OPEN SET
+    # --------------------------------------------
+
+    open_set = []
+
+    heapq.heappush(
+        open_set,
+        (
+            heuristic(
+                start_node,
+                goal_node
+            ),
+            0.0,
+            start_node
+        )
+    )
+
+    came_from = {}
+
+    g_score = {
+        start_node: 0.0
+    }
+
+    closed = set()
+
+    # --------------------------------------------
+    # SEARCH
+    # --------------------------------------------
+
+    while open_set:
+
+        (
+            _,
+            current_g,
+            current
+        ) = heapq.heappop(
+            open_set
+        )
+
+        if current in closed:
+            continue
+
+        if current == goal_node:
+
+            path = []
+
+            node = current
+
+            while node in came_from:
+
+                path.append(
+                    grid_to_world(node)
+                )
+
+                node = came_from[node]
+
+            path.append(
+                grid_to_world(
+                    start_node
+                )
+            )
+
+            path.reverse()
+
+            return path
+
+        closed.add(current)
+
+        # ----------------------------------------
+        # NEIGHBOURS
+        # ----------------------------------------
+
+        for dx, dy, dz in directions:
+
+            neighbor = (
+                current[0] + dx,
+                current[1] + dy,
+                current[2] + dz
+            )
+
+            # Grid bounds.
+            if (
+                neighbor[0] < 0
+                or
+                neighbor[0] > max_x
+            ):
+                continue
+
+            if (
+                neighbor[1] < 0
+                or
+                neighbor[1] > max_y
+            ):
+                continue
+
+            if (
+                neighbor[2] < 0
+                or
+                neighbor[2] > max_z
+            ):
+                continue
+
+            current_position = grid_to_world(
+                current
+            )
+
+            neighbor_position = grid_to_world(
+                neighbor
+            )
+
+            # Проверяем конечную точку.
+            if collision(
+                neighbor_position
+            ):
+                continue
+
+            # ВАЖНО:
+            # проверяем весь переход,
+            # а не только соседний узел.
+            if segment_collision(
+                current_position,
+                neighbor_position
+            ):
+                continue
+
+            movement_cost = np.sqrt(
+                dx * dx
+                +
+                dy * dy
+                +
+                dz * dz
+            )
+
+            new_g = (
+                current_g
+                +
+                movement_cost
+            )
+
+            if new_g < g_score.get(
+                neighbor,
+                np.inf
+            ):
+
+                came_from[neighbor] = current
+
+                g_score[neighbor] = new_g
+
+                f = (
+                    new_g
+                    +
+                    heuristic(
+                        neighbor,
+                        goal_node
+                    )
+                )
+
+                heapq.heappush(
+                    open_set,
+                    (
+                        f,
+                        new_g,
+                        neighbor
+                    )
+                )
+
+    return None
+
+
+# ============================================================
+# SAFE PATH SMOOTHING
+# ============================================================
+
+def simplify_path(path):
+
+    if len(path) <= 2:
+        return path
+
+    result = [path[0]]
+
+    current_index = 0
+
+    while current_index < len(path) - 1:
+
+        best_index = current_index + 1
+
+        # Ищем самый дальний узел,
+        # до которого можно провести
+        # прямой безопасный участок.
+        for candidate in range(
+            current_index + 1,
+            len(path)
+        ):
+
+            if not segment_collision(
+                path[current_index],
+                path[candidate]
+            ):
+
+                best_index = candidate
+
+        result.append(
+            path[best_index]
+        )
+
+        current_index = best_index
+
+    return result
+
+
+# ============================================================
+# QUATERNION ERROR
+# ============================================================
+
+def quaternion_error(
+    current,
+    target
+):
+
+    current = (
+        current
+        /
+        np.linalg.norm(current)
+    )
+
+    target = (
+        target
+        /
+        np.linalg.norm(target)
+    )
+
+    inverse = np.array([
+        current[0],
+        -current[1],
+        -current[2],
+        -current[3]
+    ])
+
+    error = np.zeros(4)
+
+    mujoco.mju_mulQuat(
+        error,
+        target,
+        inverse
+    )
+
+    if error[0] < 0:
+
+        error = -error
+
+    w = np.clip(
+        error[0],
+        -1.0,
         1.0
     )
 
-    s = (
-        10.0 * s**3
-        -
-        15.0 * s**4
-        +
-        6.0 * s**5
+    vector = error[1:]
+
+    vector_norm = np.linalg.norm(
+        vector
     )
 
-    return slerp(
-        q_start,
-        q_goal,
-        s
+    if vector_norm < 1e-8:
+
+        return np.zeros(3)
+
+    angle = (
+        2.0
+        *
+        np.arctan2(
+            vector_norm,
+            w
+        )
     )
 
+    axis = (
+        vector
+        /
+        vector_norm
+    )
 
-# ==================== POSITION CONTROLLER ====================
+    return axis * angle
+
+
+# ============================================================
+# POSITION CONTROLLER
+# ============================================================
 
 def position_controller(
-    target_position
+    target
 ):
-    position = data.qpos[0:3].copy()
-    velocity = data.qvel[0:3].copy()
+
+    position = data.qpos[0:3]
+
+    velocity = data.qvel[0:3]
 
     error = (
-        target_position
+        target
         -
         position
     )
@@ -646,61 +829,360 @@ def position_controller(
         Kd_position * velocity
     )
 
-    gravity = np.array([
-        0.0,
-        0.0,
-        -9.81
-    ])
+    # --------------------------------------------
+    # HORIZONTAL LIMIT
+    # --------------------------------------------
+
+    horizontal = acceleration[:2]
+
+    horizontal_norm = np.linalg.norm(
+        horizontal
+    )
+
+    if (
+        horizontal_norm
+        >
+        MAX_HORIZONTAL_ACCEL
+    ):
+
+        horizontal *= (
+            MAX_HORIZONTAL_ACCEL
+            /
+            horizontal_norm
+        )
+
+    acceleration[:2] = horizontal
+
+    # --------------------------------------------
+    # VERTICAL LIMIT
+    # --------------------------------------------
+
+    acceleration[2] = np.clip(
+        acceleration[2],
+        -MAX_VERTICAL_ACCEL,
+        MAX_VERTICAL_ACCEL
+    )
+
+    # --------------------------------------------
+    # GRAVITY COMPENSATION
+    # --------------------------------------------
 
     force = mass * (
         acceleration
-        -
-        gravity
+        +
+        np.array([
+            0.0,
+            0.0,
+            9.81
+        ])
     )
 
-    force_norm = np.linalg.norm(force)
+    return force
 
-    if force_norm > MAX_FORCE:
+
+# ============================================================
+# FORCE LIMIT
+# ============================================================
+
+def limit_force(force):
+
+    force = np.asarray(
+        force,
+        dtype=float
+    )
+
+    length = np.linalg.norm(
+        force
+    )
+
+    if length > MAX_TOTAL_THRUST:
+
         force *= (
-            MAX_FORCE
+            MAX_TOTAL_THRUST
             /
-            force_norm
+            length
         )
 
     return force
 
 
-# ==================== ORIENTATION CONTROLLER ====================
+# ============================================================
+# DESIRED ORIENTATION
+# ============================================================
 
-def orientation_controller(
-    target_quaternion
+def desired_orientation(
+    force
 ):
-    current_quaternion = (
-        data.qpos[3:7].copy()
+
+    force = np.asarray(
+        force,
+        dtype=float
     )
 
-    current_quaternion /= np.linalg.norm(
-        current_quaternion
+    force_norm = np.linalg.norm(
+        force
     )
 
-    rotation_error = quaternion_error(
-        current_quaternion,
-        target_quaternion
+    if force_norm < 1e-8:
+
+        return q_start.copy()
+
+    # Не допускаем отрицательной вертикальной тяги.
+    fz = max(
+        force[2],
+        0.1
     )
 
-    angular_velocity = (
-        data.qvel[3:6].copy()
+    horizontal = np.linalg.norm(
+        force[:2]
     )
+
+    maximum_horizontal = (
+        fz
+        *
+        np.tan(
+            MAX_TILT
+        )
+    )
+
+    if horizontal > maximum_horizontal:
+
+        force = force.copy()
+
+        force[:2] *= (
+            maximum_horizontal
+            /
+            horizontal
+        )
+
+    z_axis = (
+        force
+        /
+        np.linalg.norm(force)
+    )
+
+    yaw = GOAL_YAW
+
+    x_reference = np.array([
+        np.cos(yaw),
+        np.sin(yaw),
+        0.0
+    ])
+
+    y_axis = np.cross(
+        z_axis,
+        x_reference
+    )
+
+    y_norm = np.linalg.norm(
+        y_axis
+    )
+
+    if y_norm < 1e-8:
+
+        return q_start.copy()
+
+    y_axis /= y_norm
+
+    x_axis = np.cross(
+        y_axis,
+        z_axis
+    )
+
+    x_axis /= np.linalg.norm(
+        x_axis
+    )
+
+    rotation = np.column_stack([
+        x_axis,
+        y_axis,
+        z_axis
+    ])
+
+    return rotation_matrix_to_quaternion(
+        rotation
+    )
+
+
+# ============================================================
+# ROTATION MATRIX -> QUATERNION
+# ============================================================
+
+def rotation_matrix_to_quaternion(R):
+
+    trace = np.trace(R)
+
+    if trace > 0:
+
+        s = 2.0 * np.sqrt(
+            trace + 1.0
+        )
+
+        qw = 0.25 * s
+
+        qx = (
+            R[2, 1]
+            -
+            R[1, 2]
+        ) / s
+
+        qy = (
+            R[0, 2]
+            -
+            R[2, 0]
+        ) / s
+
+        qz = (
+            R[1, 0]
+            -
+            R[0, 1]
+        ) / s
+
+    else:
+
+        if (
+            R[0, 0] > R[1, 1]
+            and
+            R[0, 0] > R[2, 2]
+        ):
+
+            s = 2.0 * np.sqrt(
+                1.0
+                +
+                R[0, 0]
+                -
+                R[1, 1]
+                -
+                R[2, 2]
+            )
+
+            qw = (
+                R[2, 1]
+                -
+                R[1, 2]
+            ) / s
+
+            qx = 0.25 * s
+
+            qy = (
+                R[0, 1]
+                +
+                R[1, 0]
+            ) / s
+
+            qz = (
+                R[0, 2]
+                +
+                R[2, 0]
+            ) / s
+
+        elif R[1, 1] > R[2, 2]:
+
+            s = 2.0 * np.sqrt(
+                1.0
+                +
+                R[1, 1]
+                -
+                R[0, 0]
+                -
+                R[2, 2]
+            )
+
+            qw = (
+                R[0, 2]
+                -
+                R[2, 0]
+            ) / s
+
+            qx = (
+                R[0, 1]
+                +
+                R[1, 0]
+            ) / s
+
+            qy = 0.25 * s
+
+            qz = (
+                R[1, 2]
+                +
+                R[2, 1]
+            ) / s
+
+        else:
+
+            s = 2.0 * np.sqrt(
+                1.0
+                +
+                R[2, 2]
+                -
+                R[0, 0]
+                -
+                R[1, 1]
+            )
+
+            qw = (
+                R[1, 0]
+                -
+                R[0, 1]
+            ) / s
+
+            qx = (
+                R[0, 2]
+                +
+                R[2, 0]
+            ) / s
+
+            qy = (
+                R[1, 2]
+                +
+                R[2, 1]
+            ) / s
+
+            qz = 0.25 * s
+
+    q = np.array([
+        qw,
+        qx,
+        qy,
+        qz
+    ])
+
+    return (
+        q
+        /
+        np.linalg.norm(q)
+    )
+
+
+# ============================================================
+# ATTITUDE CONTROLLER
+# ============================================================
+
+def attitude_controller(
+    target
+):
+
+    current = data.qpos[3:7]
+
+    error = quaternion_error(
+        current,
+        target
+    )
+
+    angular_velocity = data.qvel[3:6]
 
     torque = (
-        Kp_rotation * rotation_error
+        Kp_attitude * error
         -
-        Kd_rotation * angular_velocity
+        Kd_attitude * angular_velocity
     )
 
-    torque_norm = np.linalg.norm(torque)
+    torque_norm = np.linalg.norm(
+        torque
+    )
 
     if torque_norm > MAX_TORQUE:
+
         torque *= (
             MAX_TORQUE
             /
@@ -710,11 +1192,80 @@ def orientation_controller(
     return torque
 
 
-# ==================== INITIAL STATE ====================
+# ============================================================
+# MOTOR MIXER
+# ============================================================
+
+def motor_mixer(
+    thrust,
+    torque
+):
+
+    roll_torque = torque[0]
+    pitch_torque = torque[1]
+
+    base = thrust / 4.0
+
+    # ------------------------------------------------
+    # Преобразование требуемого момента
+    # в разницу тяги моторов.
+    #
+    # Моторы:
+    #
+    # M2 -------- M1
+    #  |          |
+    #  |  DRONE   |
+    #  |          |
+    # M3 -------- M4
+    #
+    # ------------------------------------------------
+
+    roll = (
+        roll_torque
+        /
+        (4.0 * ARM)
+    )
+
+    pitch = (
+        pitch_torque
+        /
+        (4.0 * ARM)
+    )
+
+    motors = np.array([
+
+        # M1 (+X, +Y)
+        base + roll - pitch,
+
+        # M2 (-X, +Y)
+        base + roll + pitch,
+
+        # M3 (-X, -Y)
+        base - roll + pitch,
+
+        # M4 (+X, -Y)
+        base - roll - pitch
+
+    ])
+
+    return np.clip(
+        motors,
+        MIN_THRUST_PER_MOTOR,
+        MAX_THRUST_PER_MOTOR
+    )
+
+
+# ============================================================
+# INITIAL STATE
+# ============================================================
 
 data.qpos[0:3] = START_POSITION
+
 data.qpos[3:7] = q_start
+
 data.qvel[:] = 0.0
+
+data.ctrl[:] = 0.0
 
 mujoco.mj_forward(
     model,
@@ -722,72 +1273,234 @@ mujoco.mj_forward(
 )
 
 
-# ==================== INFORMATION ====================
+# ============================================================
+# GET OBSTACLES AGAIN
+# ============================================================
+
+OBSTACLES = get_obstacles()
+
+
+# ============================================================
+# PLAN PATH
+# ============================================================
+
+PATH = astar(
+    START_POSITION,
+    GOAL_POSITION
+)
+
+if PATH is None:
+
+    raise RuntimeError(
+        "A* не смог найти путь через препятствия."
+    )
+
 
 print()
-print("TRAJECTORY PLANNER")
+print("A* первоначальный путь:")
+print(
+    "Количество точек:",
+    len(PATH)
+)
+
+
+# ============================================================
+# SAFE PATH SIMPLIFICATION
+# ============================================================
+
+PATH = simplify_path(
+    PATH
+)
 
 print(
-    "START POSITION:",
+    "После безопасного упрощения:",
+    len(PATH),
+    "точек"
+)
+
+
+# ============================================================
+# FINAL PATH VALIDATION
+# ============================================================
+
+for i in range(
+    len(PATH) - 1
+):
+
+    if segment_collision(
+        PATH[i],
+        PATH[i + 1]
+    ):
+
+        raise RuntimeError(
+            "Ошибка: итоговая траектория "
+            "пересекает препятствие."
+        )
+
+
+# ============================================================
+# PATH SPEED
+# ============================================================
+
+PATH_SPEED = 0.5
+
+path_length = 0.0
+
+for i in range(
+    len(PATH) - 1
+):
+
+    path_length += np.linalg.norm(
+        PATH[i + 1]
+        -
+        PATH[i]
+    )
+
+
+FLIGHT_TIME = (
+    path_length
+    /
+    PATH_SPEED
+)
+
+
+# ============================================================
+# POSITION AT TIME
+# ============================================================
+
+def position_at_time(t):
+
+    if t >= FLIGHT_TIME:
+
+        return GOAL_POSITION.copy()
+
+    distance = (
+        PATH_SPEED
+        *
+        t
+    )
+
+    accumulated = 0.0
+
+    for i in range(
+        len(PATH) - 1
+    ):
+
+        segment = (
+            PATH[i + 1]
+            -
+            PATH[i]
+        )
+
+        length = np.linalg.norm(
+            segment
+        )
+
+        if (
+            accumulated
+            +
+            length
+            >=
+            distance
+        ):
+
+            alpha = (
+                distance
+                -
+                accumulated
+            ) / length
+
+            return (
+                PATH[i]
+                +
+                alpha
+                *
+                segment
+            )
+
+        accumulated += length
+
+    return GOAL_POSITION.copy()
+
+
+# ============================================================
+# INFORMATION
+# ============================================================
+
+print()
+print("==============================")
+print("3D QUADROTOR TRAJECTORY PLANNER")
+print("==============================")
+
+print(
+    "Mass:",
+    mass
+)
+
+print(
+    "Actuators:",
+    model.nu
+)
+
+print(
+    "Start:",
     START_POSITION
 )
 
 print(
-    "GOAL POSITION:",
+    "Goal:",
     GOAL_POSITION
 )
 
 print(
-    "START ORIENTATION:",
-    np.rad2deg([
-        START_ROLL,
-        START_PITCH,
-        START_YAW
-    ])
+    "Obstacles:",
+    len(OBSTACLES)
 )
 
 print(
-    "GOAL ORIENTATION:",
-    np.rad2deg([
-        GOAL_ROLL,
-        GOAL_PITCH,
-        GOAL_YAW
-    ])
+    "Path length:",
+    round(
+        path_length,
+        2
+    )
 )
-
-if FLIGHT_TIME <= 0.0:
-    print("Режим: ВРАЩЕНИЕ НА МЕСТЕ")
-else:
-    print("Режим: A* + ПОЛЁТ + ВРАЩЕНИЕ")
 
 print(
     "Flight time:",
-    round(FLIGHT_TIME, 2)
-)
-
-print(
-    "Rotation time:",
-    ROTATION_TIME
+    round(
+        FLIGHT_TIME,
+        2
+    )
 )
 
 print()
 
+if model.nu != 4:
 
-# ==================== PATH ====================
+    raise RuntimeError(
+        f"Ожидалось 4 actuator, "
+        f"но MuJoCo обнаружил {model.nu}."
+    )
 
-if len(PATH) > 1:
-    print("PATH:")
 
-    for i, point in enumerate(PATH):
-        print(
-            f"{i:3d}:",
-            np.round(point, 2)
+print("FINAL A* PATH:")
+
+for i, point in enumerate(PATH):
+
+    print(
+        i,
+        np.round(
+            point,
+            2
         )
+    )
 
-    print()
+print()
 
 
-# ==================== VIEWER ====================
+# ============================================================
+# SIMULATION
+# ============================================================
 
 with mujoco.viewer.launch_passive(
     model,
@@ -800,26 +1513,70 @@ with mujoco.viewer.launch_passive(
 
         t = data.time
 
-        target_position = position_at_time(t)
+        # --------------------------------------------
+        # TARGET POSITION
+        # --------------------------------------------
 
-        target_orientation = orientation_at_time(t)
+        target_position = position_at_time(
+            t
+        )
 
-        force = position_controller(
+        # --------------------------------------------
+        # POSITION CONTROL
+        # --------------------------------------------
+
+        desired_force = position_controller(
             target_position
         )
 
-        torque = orientation_controller(
+        desired_force = limit_force(
+            desired_force
+        )
+
+        # --------------------------------------------
+        # ATTITUDE TARGET
+        # --------------------------------------------
+
+        target_orientation = desired_orientation(
+            desired_force
+        )
+
+        # --------------------------------------------
+        # ATTITUDE CONTROL
+        # --------------------------------------------
+
+        desired_torque = attitude_controller(
             target_orientation
         )
 
-        data.xfrc_applied[drone_id] = np.array([
-            force[0],
-            force[1],
-            force[2],
-            torque[0],
-            torque[1],
-            torque[2]
-        ])
+        # --------------------------------------------
+        # TOTAL THRUST
+        # --------------------------------------------
+
+        thrust = np.linalg.norm(
+            desired_force
+        )
+
+        thrust = np.clip(
+            thrust,
+            0.0,
+            MAX_TOTAL_THRUST
+        )
+
+        # --------------------------------------------
+        # MOTOR MIXING
+        # --------------------------------------------
+
+        motors = motor_mixer(
+            thrust,
+            desired_torque
+        )
+
+        # --------------------------------------------
+        # APPLY
+        # --------------------------------------------
+
+        data.ctrl[:] = motors
 
         mujoco.mj_step(
             model,
@@ -828,45 +1585,28 @@ with mujoco.viewer.launch_passive(
 
         viewer.sync()
 
-        if t - last_print > 0.25:
+        # --------------------------------------------
+        # DEBUG
+        # --------------------------------------------
 
-            current_position = (
-                data.qpos[0:3]
-            )
+        if (
+            t - last_print
+            >
+            0.25
+        ):
 
-            error_position = np.linalg.norm(
-                GOAL_POSITION
-                -
-                current_position
-            )
+            position = data.qpos[0:3]
 
-            error_orientation = np.linalg.norm(
-                quaternion_error(
-                    data.qpos[3:7],
-                    q_goal
-                )
-            )
+            velocity = data.qvel[0:3]
 
             print(
-                "t =",
-                round(t, 2),
-                "| target =",
-                np.round(target_position, 2),
-                "| actual =",
-                np.round(current_position, 2),
-                "| pos_error =",
-                round(error_position, 3),
-                "| rot_error =",
-                round(
-                    np.rad2deg(
-                        error_orientation
-                    ),
-                    2
-                ),
-                "| torque =",
-                np.round(torque, 2)
+                f"t={t:6.2f} "
+                f"| target={np.round(target_position, 2)} "
+                f"| actual={np.round(position, 2)} "
+                f"| vel={np.round(velocity, 2)} "
+                f"| motors={np.round(motors, 2)}"
             )
 
             last_print = t
 
-        time.sleep(0.002)
+        time.sleep(0.001)
