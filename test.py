@@ -2,8 +2,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 import time
-
-
+import glfw
 
 def quintic_s(tau):
     return 10 * tau**3 - 15 * tau**4 + 6 * tau**5
@@ -37,10 +36,10 @@ class TrajectoryPlanner:
         s = quintic_s(tau)
         ds = quintic_ds(tau)
         dds = quintic_dds(tau)
-        delta = self.p1 - self.p0
-        pos_des = self.p0 + delta * s
-        vel_des = delta * ds / self.T
-        acc_des = delta * dds / self.T**2
+        
+        pos_des = self.p0 + (self.p1 - self.p0) * s
+        vel_des = (self.p1 - self.p0) * ds / self.T
+        acc_des = (self.p1 - self.p0) * dds / self.T**2
         roll_des = self.target_roll * s
         g = np.array([0.0, 0.0, -self.g])
         force_world = self.m * (acc_des - g)
@@ -48,11 +47,47 @@ class TrajectoryPlanner:
         normal_world = force_world / thrust if thrust > 1e-8 else np.array([0.0, 0.0, 1.0])
         return pos_des, vel_des, acc_des, thrust, normal_world, roll_des
 
+    def key_callback(self, keycode):
+        if keycode == glfw.KEY_UP:
+            self.p1 = self.p1 + np.array([1, 0, 0])
+            self.new_target(data.qpos[:3])
+
+        elif keycode == glfw.KEY_DOWN:
+            self.p1 = self.p1 - np.array([1, 0, 0])
+            self.new_target(data.qpos[:3])
+
+        elif keycode == glfw.KEY_RIGHT:
+            self.p1 = self.p1 + np.array([0, 1, 0])
+            self.new_target(data.qpos[:3])
+
+        elif keycode == glfw.KEY_LEFT:
+            self.p1 = self.p1 - np.array([0, 1, 0])
+            self.new_target(data.qpos[:3])
+
+        elif keycode == 76:
+            
+            self.p1 = self.p1 + np.array([0, 0, 1])
+            self.new_target(data.qpos[:3])
+
+        elif keycode == 75:
+
+            self.p1 = self.p1 - np.array([0, 0, 1])
+            self.new_target(data.qpos[:3])
+        
+
+    def new_target(self, current_pos):
+            self.t = 0
+            self.p0 = np.array(current_pos, dtype=float)  
+            self.forward = self.p1 - self.p0
+            self.forward[2] = 0.0
+            n = np.linalg.norm(self.forward)
+            self.forward = self.forward / n if n > 1e-8 else np.array([1.0, 0.0, 0.0])
+
 
 start_pos = [0.0, 0.0, 2.0]
-end_pos = [0.0, 0.0, 2.0]
+end_pos = [10.0, 10.0, 2.0]
 duration = 5.0
-target_roll = 180.0
+target_roll = 90.0
 
 mass = 1.0
 gravity = 9.81
@@ -74,11 +109,11 @@ Kd_pos = 1.0
 
 Kp_att = 1.0
 Kd_att = 0.5
-max_torque = 0.3
+max_torque = 0.5
 
 next_print = 0.0
 
-with mujoco.viewer.launch_passive(model, data) as viewer:
+with mujoco.viewer.launch_passive(model, data, key_callback=planner.key_callback) as viewer:
     while viewer.is_running():
 
         pos_des, vel_des, acc_des, thrust, normal_world, roll_des = planner.update(dt)
@@ -92,8 +127,11 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         normal_world = force_world / thrust if thrust > 1e-8 else np.array([0.0, 0.0, 1.0])
 
         z = normal_world
-        x = planner.forward - z * np.dot(planner.forward, z)
+
+        x = np.array([1.0, 0.0, 0.0])
+        x = x - z * np.dot(x, z)
         x /= max(np.linalg.norm(x), 1e-8)
+
         y = np.cross(z, x)
 
         R_base = np.column_stack((x, y, z))
@@ -124,9 +162,5 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
         data.xfrc_applied[body_id, 3:6] = torque
 
         mujoco.mj_step(model, data)
-        
-
         viewer.sync()
-
-
         time.sleep(dt)
